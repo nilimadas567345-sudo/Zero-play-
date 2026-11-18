@@ -743,7 +743,10 @@ class EchoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startDownload(url: String, customTitle: String?, preset: DownloadFormatPreset) {
-        val urls = url.lines().map { it.trim() }.filter { it.isNotBlank() }
+        val urlRegex = Regex("""https?://[^\s<>"']+""")
+        val urls = url.lines()
+            .mapNotNull { line -> urlRegex.find(line.trim())?.value ?: line.trim().takeIf { it.isNotBlank() } }
+            .filter { it.isNotBlank() }
         if (urls.isEmpty()) {
             showStatus("Enter a valid http:// or https:// media URL")
             return
@@ -753,22 +756,34 @@ class EchoViewModel(application: Application) : AndroidViewModel(application) {
         var lastError: String? = null
         urls.forEachIndexed { idx, singleUrl ->
             val titleForItem = if (urls.size == 1) customTitle else customTitle?.let { "${it}_${idx + 1}" }
+            val maxHeight = if (preset.isVideo) {
+                MediaDownloadManager.defaultHeightForPreset(preset)
+            } else {
+                s.sealVideoResolution.heightPx
+            }
             val result = downloadManager.enqueueDownload(
                 rawUrl = singleUrl,
                 customTitle = titleForItem,
                 preset = preset,
+                maxVideoHeightPx = maxHeight,
                 wifiOnly = s.wifiOnlyDownloads,
                 restrictFilenames = s.restrictFilenames,
                 splitSubfolders = s.splitSubfolders,
                 filenameTemplate = s.filenameTemplate,
                 autoImportToLibrary = s.autoImportDownloads,
+                onCompleted = { title ->
+                    viewModelScope.launch { showStatus("Downloaded: $title") }
+                },
                 onError = { msg -> viewModelScope.launch { showStatus(msg) } }
             )
             result.onSuccess { startedCount++ }.onFailure { lastError = it.message }
         }
         if (startedCount > 0) {
             _uiState.update { it.copy(downloadSheetUrl = null) }
-            showStatus(if (startedCount == 1) "Checking stream & starting download..." else "Queued $startedCount batch downloads")
+            showStatus(
+                if (startedCount == 1) "Extracting media stream & downloading..."
+                else "Queued $startedCount batch downloads"
+            )
         } else {
             showStatus(lastError ?: "Failed to start download")
         }

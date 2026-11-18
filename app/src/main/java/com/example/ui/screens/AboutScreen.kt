@@ -88,7 +88,7 @@ private enum class AboutModalType(val title: String, val body: String) {
         title = "Zero Play Core Stack",
         body = "• Media3 ExoPlayer & MediaSessionService (Audio Focus, Skip Silence, PiP)\n" +
             "• Material Design 3 Expressive with System / Light / Dark & AMOLED black themes\n" +
-            "• Direct HTTP Stream Downloader with HTML rejection & MediaStore import\n" +
+            "• YouTube, Instagram Reels & Direct Stream Downloader with local MP4/M4A muxing\n" +
             "• Hardware-accelerated Video Compressor, Photo Converter (JPEG/PNG/WebP), & M4A Audio Extractor"
     ),
     DONATE(
