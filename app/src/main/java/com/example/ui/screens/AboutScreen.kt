@@ -77,11 +77,11 @@ private const val GITHUB_REPO_URL = "https://github.com/nilimadas567345-sudo/Zer
 
 private enum class AboutModalType(val title: String, val body: String) {
     CHANGELOG(
-        title = "Zero Play Changelog",
-        body = "• New Zero Play obsidian & flame-orange play monogram logo and adaptive icon\n" +
-            "• GitHub & AI Studio Self-Update engine with Stable & Preview channels\n" +
-            "• Configure Before Download sheet with Video/Audio/Commands & format dialogs\n" +
-            "• Real cover art & video thumbnails in system media notifications\n" +
+        title = "Zero Play v2.0 Changelog",
+        body = "• Upgraded YouTube & Instagram stream extractor with live visitorData, multi-client verification, and Piped/Invidious carrier-safe fallbacks (fixes HTTP 403)\n" +
+            "• Automatic HD YouTube MP4 video + M4A audio muxing & Instagram Reel to M4A extraction\n" +
+            "• Zero Play obsidian & flame-orange play monogram logo and adaptive icon\n" +
+            "• GitHub & AI Studio Self-Update engine pre-configured for nilimadas567345-sudo/Zero-play-\n" +
             "• Video Now Playing: -10s / +10s seek buttons, Fit/Zoom aspect toggle & 2-Column Artists Grid"
     ),
     STACK(

@@ -39,7 +39,17 @@ class MediaDownloadManager(
     private val context: Context,
     private val repository: EchoRepository
 ) {
-    private val resolver = MediaStreamResolver()
+    companion object {
+        fun defaultHeightForPreset(preset: DownloadFormatPreset): Int = when (preset) {
+            DownloadFormatPreset.VIDEO_MP4_4K -> 2160
+            DownloadFormatPreset.VIDEO_MP4_HIGH -> 1080
+            DownloadFormatPreset.VIDEO_MP4_STANDARD -> 720
+            DownloadFormatPreset.VIDEO_MP4_COMPACT -> 480
+            else -> 1080
+        }
+    }
+
+    private val resolver = MediaUrlResolver()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activeJobs = mutableMapOf<String, Job>()
 
@@ -50,11 +60,13 @@ class MediaDownloadManager(
         rawUrl: String,
         customTitle: String?,
         preset: DownloadFormatPreset,
+        maxVideoHeightPx: Int? = null,
         wifiOnly: Boolean = false,
         restrictFilenames: Boolean = true,
         splitSubfolders: Boolean = true,
         filenameTemplate: SealFilenameTemplatePref = SealFilenameTemplatePref.TITLE_ARTIST,
         autoImportToLibrary: Boolean = true,
+        onCompleted: ((String) -> Unit)? = null,
         onError: ((String) -> Unit)? = null
     ): Result<DownloadTaskUi> {
         val trimmed = rawUrl.trim()
@@ -92,11 +104,11 @@ class MediaDownloadManager(
         val job = scope.launch {
             val cacheFiles = mutableListOf<File>()
             try {
-                val maxHeight = maxHeightForPreset(preset)
+                val maxHeight = maxVideoHeightPx ?: defaultHeightForPreset(preset)
                 val resolvedResult = resolver.resolve(
                     rawUrl = trimmed,
                     preferAudio = !preset.isVideo,
-                    maxHeightPx = maxHeight
+                    maxVideoHeightPx = maxHeight
                 )
                 if (resolvedResult.isFailure) {
                     val msg = resolvedResult.exceptionOrNull()?.message
@@ -120,38 +132,62 @@ class MediaDownloadManager(
                 _downloads.update { list ->
                     list.map {
                         if (it.id == taskId) {
-                            it.copy(title = finalName, url = resolved.primaryUrl, progress = 0.08f)
+                            it.copy(title = finalName, url = trimmed, progress = 0.08f)
                         } else it
                     }
                 }
 
                 val tempDir = File(context.cacheDir, "dl_work").apply { mkdirs() }
                 val primaryTemp = File(tempDir, "primary_${taskId}.tmp").also { cacheFiles += it }
+                val sourceLabel = resolved.artist?.takeIf { it.isNotBlank() } ?: inferSourcePlatform(trimmed)
 
-                if (resolved.secondaryAudioUrl != null && preset.isVideo) {
-                    // Download adaptive Video + Audio in sequence, then mux into single MP4
+                if (resolved.companionAudioUrl != null && preset.isVideo) {
                     val audioTemp = File(tempDir, "audio_${taskId}.tmp").also { cacheFiles += it }
                     val muxedTemp = File(tempDir, "muxed_${taskId}.mp4").also { cacheFiles += it }
 
-                    downloadStreamToFile(
-                        streamUrl = resolved.primaryUrl,
-                        headers = resolved.requestHeaders,
-                        destFile = primaryTemp
-                    ) { frac ->
-                        updateProgress(taskId, 0.08f + frac * 0.54f)
-                    }.getOrThrow()
+                    val adaptiveAttempt = runCatching {
+                        downloadStreamToFile(
+                            streamUrl = resolved.primaryUrl,
+                            headers = resolved.headers,
+                            destFile = primaryTemp
+                        ) { frac ->
+                            updateProgress(taskId, 0.08f + frac * 0.54f)
+                        }.getOrThrow()
 
-                    downloadStreamToFile(
-                        streamUrl = resolved.secondaryAudioUrl,
-                        headers = resolved.secondaryHeaders,
-                        destFile = audioTemp
-                    ) { frac ->
-                        updateProgress(taskId, 0.62f + frac * 0.23f)
-                    }.getOrThrow()
+                        downloadStreamToFile(
+                            streamUrl = resolved.companionAudioUrl,
+                            headers = resolved.companionAudioHeaders.ifEmpty { resolved.headers },
+                            destFile = audioTemp
+                        ) { frac ->
+                            updateProgress(taskId, 0.62f + frac * 0.23f)
+                        }.getOrThrow()
 
-                    updateProgress(taskId, 0.88f)
-                    val muxedOk = muxVideoAndAudioMp4(primaryTemp, audioTemp, muxedTemp)
-                    val finalSource = if (muxedOk && muxedTemp.length() > 1024L) muxedTemp else primaryTemp
+                        updateProgress(taskId, 0.88f)
+                        val muxedOk = muxVideoAndAudioMp4(primaryTemp, audioTemp, muxedTemp)
+                        if (!muxedOk || muxedTemp.length() <= 1024L) {
+                            error("Unable to mux adaptive video and audio")
+                        }
+                        muxedTemp
+                    }
+
+                    val finalSource = if (adaptiveAttempt.isSuccess) {
+                        adaptiveAttempt.getOrThrow()
+                    } else if (!resolved.fallbackMuxedUrl.isNullOrBlank()) {
+                        val muxFallbackTemp = File(tempDir, "muxfallback_${taskId}.mp4").also { cacheFiles += it }
+                        downloadStreamToFile(
+                            streamUrl = resolved.fallbackMuxedUrl,
+                            headers = resolved.fallbackMuxedHeaders.ifEmpty { resolved.headers },
+                            destFile = muxFallbackTemp
+                        ) { frac ->
+                            updateProgress(taskId, 0.15f + frac * 0.72f)
+                        }.getOrThrow()
+                        muxFallbackTemp
+                    } else if (primaryTemp.exists() && primaryTemp.length() > 1024L) {
+                        primaryTemp
+                    } else {
+                        throw adaptiveAttempt.exceptionOrNull() ?: IllegalStateException("Download failed")
+                    }
+
                     finishAndExport(
                         taskId = taskId,
                         sourceFile = finalSource,
@@ -161,12 +197,13 @@ class MediaDownloadManager(
                         forceVideo = true,
                         splitSubfolders = splitSubfolders,
                         autoImportToLibrary = autoImportToLibrary,
-                        sourcePlatform = resolved.sourcePlatform
+                        sourcePlatform = sourceLabel,
+                        onCompleted = onCompleted
                     )
                 } else {
                     downloadStreamToFile(
                         streamUrl = resolved.primaryUrl,
-                        headers = resolved.requestHeaders,
+                        headers = resolved.headers,
                         destFile = primaryTemp
                     ) { frac ->
                         updateProgress(taskId, 0.08f + frac * 0.78f)
@@ -174,7 +211,7 @@ class MediaDownloadManager(
 
                     val finalSource: File
                     val finalExt: String
-                    if (resolved.extractAudioFromVideo && !preset.isVideo) {
+                    if (resolved.needsAudioExtraction && !preset.isVideo) {
                         val audioOut = File(tempDir, "audio_ext_${taskId}.m4a").also { cacheFiles += it }
                         updateProgress(taskId, 0.89f)
                         val extracted = extractAudioTrackToM4a(primaryTemp, audioOut)
@@ -187,7 +224,7 @@ class MediaDownloadManager(
                         }
                     } else {
                         finalSource = primaryTemp
-                        finalExt = inferExtension(resolved.primaryUrl, preset)
+                        finalExt = resolved.extension.ifBlank { inferExtension(resolved.primaryUrl, preset) }
                     }
 
                     finishAndExport(
@@ -199,7 +236,8 @@ class MediaDownloadManager(
                         forceVideo = preset.isVideo,
                         splitSubfolders = splitSubfolders,
                         autoImportToLibrary = autoImportToLibrary,
-                        sourcePlatform = resolved.sourcePlatform
+                        sourcePlatform = sourceLabel,
+                        onCompleted = onCompleted
                     )
                 }
             } catch (t: Throwable) {
@@ -215,6 +253,11 @@ class MediaDownloadManager(
         return Result.success(pendingTask)
     }
 
+    fun dismissTask(taskId: String) {
+        activeJobs.remove(taskId)?.cancel()
+        _downloads.update { list -> list.filterNot { it.id == taskId } }
+    }
+
     private suspend fun finishAndExport(
         taskId: String,
         sourceFile: File,
@@ -224,7 +267,8 @@ class MediaDownloadManager(
         forceVideo: Boolean,
         splitSubfolders: Boolean,
         autoImportToLibrary: Boolean,
-        sourcePlatform: String
+        sourcePlatform: String,
+        onCompleted: ((String) -> Unit)?
     ) {
         updateProgress(taskId, 0.94f)
         val mimeType = mimeForExtension(forceExtension, forceVideo)
@@ -266,6 +310,7 @@ class MediaDownloadManager(
                 } else it
             }
         }
+        onCompleted?.invoke(fileBaseName)
     }
 
     private fun downloadStreamToFile(
@@ -276,6 +321,7 @@ class MediaDownloadManager(
     ): Result<File> {
         if (destFile.exists()) destFile.delete()
         var currentUrl = streamUrl
+        var activeHeaders = headers
         var downloaded = 0L
         var totalExpected = -1L
         var retries = 0
@@ -283,7 +329,6 @@ class MediaDownloadManager(
         while (retries < 6) {
             var conn: HttpURLConnection? = null
             try {
-                // Manually follow redirects so custom headers aren't lost across domains
                 var redirectCount = 0
                 while (redirectCount < 6) {
                     conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
@@ -291,7 +336,7 @@ class MediaDownloadManager(
                         connectTimeout = 15000
                         readTimeout = 30000
                         requestMethod = "GET"
-                        headers.forEach { (k, v) -> setRequestProperty(k, v) }
+                        activeHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
                         if (downloaded > 0L) {
                             setRequestProperty("Range", "bytes=$downloaded-")
                         }
@@ -310,6 +355,17 @@ class MediaDownloadManager(
 
                 val active = conn ?: return Result.failure(IllegalStateException("Unable to open stream connection"))
                 val code = active.responseCode
+                if (code == 416 && downloaded > 0L) {
+                    downloaded = 0L
+                    if (destFile.exists()) destFile.delete()
+                    retries++
+                    continue
+                }
+                if (code == 403 && activeHeaders.keys.any { it.equals("Origin", true) || it.equals("Referer", true) }) {
+                    activeHeaders = activeHeaders.filterKeys { !it.equals("Origin", true) && !it.equals("Referer", true) }
+                    retries++
+                    continue
+                }
                 if (code !in 200..299 && code != 206) {
                     return Result.failure(IllegalStateException("Media server returned HTTP $code"))
                 }
@@ -569,14 +625,6 @@ class MediaDownloadManager(
         }
     }
 
-    private fun maxHeightForPreset(preset: DownloadFormatPreset): Int = when (preset) {
-        DownloadFormatPreset.VIDEO_MP4_4K -> 2160
-        DownloadFormatPreset.VIDEO_MP4_HIGH -> 1080
-        DownloadFormatPreset.VIDEO_MP4_STANDARD -> 720
-        DownloadFormatPreset.VIDEO_MP4_COMPACT -> 480
-        else -> 1080
-    }
-
     private fun inferExtension(url: String, preset: DownloadFormatPreset): String {
         val cleanPath = url.substringBefore('?').lowercase()
         return when {
@@ -604,6 +652,15 @@ class MediaDownloadManager(
         "webm" -> if (isVideo) "video/webm" else "audio/webm"
         "ogg", "opus" -> "audio/ogg"
         else -> if (isVideo) "video/mp4" else "audio/mp4"
+    }
+
+    private fun inferSourcePlatform(rawUrl: String): String {
+        val host = runCatching { Uri.parse(rawUrl).host?.lowercase() }.getOrNull().orEmpty()
+        return when {
+            host.contains("youtube.com") || host.contains("youtu.be") -> "YouTube"
+            host.contains("instagram.com") || host.contains("instagr.am") -> "Instagram"
+            else -> "Zero Play"
+        }
     }
 
     private fun isOnUnmeteredOrWifi(): Boolean {

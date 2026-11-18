@@ -789,6 +789,15 @@ class EchoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun retryDownload(task: com.example.data.model.DownloadTaskUi) {
+        downloadManager.dismissTask(task.id)
+        startDownload(task.url, null, task.preset)
+    }
+
+    fun dismissDownload(taskId: String) {
+        downloadManager.dismissTask(taskId)
+    }
+
     fun openPhotoConverter() {
         _uiState.update { it.copy(showPhotoConverterSheet = true) }
     }

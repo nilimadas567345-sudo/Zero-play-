@@ -107,4 +107,17 @@ class MediaUrlResolverTest {
         assertTrue(audioFromIg.getOrThrow().needsAudioExtraction)
         assertEquals("m4a", audioFromIg.getOrThrow().extension)
     }
+
+    @Test
+    fun unescapeMediaUrl_stripsTrailingBackslashesAndUnescapesTokens() {
+        val raw = "https:\\/\\/scontent.cdninstagram.com\\/video.mp4?a=1\\u0026b\\u003D2\\"
+        assertEquals(
+            "https://scontent.cdninstagram.com/video.mp4?a=1&b=2",
+            resolver.unescapeMediaUrl(raw)
+        )
+        assertEquals(
+            "Df1nQiWToL1",
+            resolver.extractInstagramShortcode("https://www.instagram.com/someuser/reel/Df1nQiWToL1/?igsh=xyz")
+        )
+    }
 }

@@ -290,6 +290,8 @@ fun EchoMusicApp(
                                 onOpenVideoCompressor = { viewModel.openVideoConverter() },
                                 onOpenAudioExtractor = { viewModel.openAudioExtractor() },
                                 onOpenDownloader = { viewModel.openDownloadSheet() },
+                                onRetryDownload = viewModel::retryDownload,
+                                onDismissDownload = viewModel::dismissDownload,
                                 onTopBarAction = viewModel::openTopSheet,
                                 onLogoClick = { viewModel.openAbout(true) },
                                 modifier = contentModifier

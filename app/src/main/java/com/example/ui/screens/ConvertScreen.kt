@@ -24,15 +24,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.Compare
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Transform
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -79,6 +82,8 @@ fun ConvertScreen(
     onOpenVideoCompressor: () -> Unit,
     onOpenAudioExtractor: () -> Unit,
     onOpenDownloader: () -> Unit,
+    onRetryDownload: (DownloadTaskUi) -> Unit = {},
+    onDismissDownload: (String) -> Unit = {},
     onTopBarAction: (EchoTopSheetType) -> Unit,
     onLogoClick: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -178,7 +183,9 @@ fun ConvertScreen(
                         DownloadProgressRow(
                             task = task,
                             index = index,
-                            totalCount = downloads.size
+                            totalCount = downloads.size,
+                            onRetry = { onRetryDownload(task) },
+                            onDismiss = { onDismissDownload(task.id) }
                         )
                     }
                 }
@@ -456,7 +463,9 @@ private fun BeforeAfterComparisonDialog(
 private fun DownloadProgressRow(
     task: DownloadTaskUi,
     index: Int,
-    totalCount: Int
+    totalCount: Int,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -466,7 +475,7 @@ private fun DownloadProgressRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -503,17 +512,33 @@ private fun DownloadProgressRow(
                     )
                 }
             }
-            if (task.status == JobStatus.COMPLETED) {
+            if (task.status == JobStatus.FAILED) {
+                IconButton(
+                    onClick = onRetry,
+                    modifier = Modifier.testTag("download_retry_btn_${task.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = "Retry download",
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            } else if (task.status == JobStatus.COMPLETED) {
                 Icon(
                     imageVector = Icons.Rounded.CheckCircle,
                     contentDescription = "Downloaded",
-                    tint = MaterialTheme.colorScheme.secondary
+                    tint = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.padding(horizontal = 4.dp)
                 )
-            } else if (task.status == JobStatus.FAILED) {
+            }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("download_dismiss_btn_${task.id}")
+            ) {
                 Icon(
-                    imageVector = Icons.Rounded.ErrorOutline,
-                    contentDescription = "Download failed",
-                    tint = MaterialTheme.colorScheme.error
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = if (task.status == JobStatus.RUNNING) "Cancel download" else "Dismiss download",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

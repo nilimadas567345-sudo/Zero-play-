@@ -173,9 +173,9 @@ internal class MediaUrlResolver {
         InnerTubeProfile(
             name = "ANDROID_VR",
             clientName = "ANDROID_VR",
-            clientVersion = "1.60.19",
+            clientVersion = "1.62.27",
             clientId = "28",
-            userAgent = "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
             deviceMake = "Oculus",
             deviceModel = "Quest 3",
             osName = "Android",
@@ -183,22 +183,23 @@ internal class MediaUrlResolver {
             androidSdkVersion = 32
         ),
         InnerTubeProfile(
-            name = "IOS",
-            clientName = "IOS",
-            clientVersion = "20.10.4",
-            clientId = "5",
-            userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
-            deviceMake = "Apple",
-            deviceModel = "iPhone16,2",
-            osName = "iPhone",
-            osVersion = "18.3.2.22D82"
+            name = "ANDROID_VR_LEGACY",
+            clientName = "ANDROID_VR",
+            clientVersion = "1.43.32",
+            clientId = "28",
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.43.32 (Linux; U; Android 12; quest-user) gzip",
+            deviceMake = "Oculus",
+            deviceModel = "Quest 2",
+            osName = "Android",
+            osVersion = "12",
+            androidSdkVersion = 32
         ),
         InnerTubeProfile(
-            name = "ANDROID",
-            clientName = "ANDROID",
-            clientVersion = "20.10.38",
-            clientId = "3",
-            userAgent = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip",
+            name = "ANDROID_CREATOR",
+            clientName = "ANDROID_CREATOR",
+            clientVersion = "24.30.100",
+            clientId = "14",
+            userAgent = "com.google.android.apps.youtube.creator/24.30.100 (Linux; U; Android 14; en_US) gzip",
             deviceMake = "Google",
             deviceModel = "Pixel 8",
             osName = "Android",
@@ -216,6 +217,29 @@ internal class MediaUrlResolver {
             osName = "Windows",
             osVersion = "10.0",
             isEmbedded = true
+        ),
+        InnerTubeProfile(
+            name = "ANDROID_EMBEDDED_PLAYER",
+            clientName = "ANDROID_EMBEDDED_PLAYER",
+            clientVersion = "1.0",
+            clientId = "55",
+            userAgent = "com.google.android.youtube/19.44.38 (Linux; U; Android 14) gzip",
+            deviceMake = "Google",
+            deviceModel = "Pixel 8",
+            osName = "Android",
+            osVersion = "14",
+            androidSdkVersion = 34
+        ),
+        InnerTubeProfile(
+            name = "IOS",
+            clientName = "IOS",
+            clientVersion = "20.10.4",
+            clientId = "5",
+            userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)",
+            deviceMake = "Apple",
+            deviceModel = "iPhone16,2",
+            osName = "iPhone",
+            osVersion = "18.3.2.22D82"
         )
     )
 
@@ -225,38 +249,83 @@ internal class MediaUrlResolver {
         maxVideoHeightPx: Int
     ): Result<ResolvedMediaStream> {
         var lastReason: String? = null
+        val visitorData = fetchYouTubeVisitorData()
+        val oembedTitle = fetchYouTubeOembedTitle(videoId)
 
         for (profile in innerTubeProfiles) {
-            val result = fetchYouTubeInnerTube(videoId, profile, preferAudio, maxVideoHeightPx)
-            if (result.isSuccess) return result
-            lastReason = result.exceptionOrNull()?.message
+            val result = fetchYouTubeInnerTube(videoId, profile, visitorData, preferAudio, maxVideoHeightPx)
+            if (result.isSuccess) {
+                val verified = verifyYouTubeCandidate(result.getOrThrow(), preferAudio)
+                if (verified != null) {
+                    return Result.success(
+                        if (verified.title.isNullOrBlank() && !oembedTitle.isNullOrBlank()) {
+                            verified.copy(title = oembedTitle)
+                        } else verified
+                    )
+                }
+                lastReason = "YouTube CDN rejected ${profile.name} stream (HTTP 403)"
+            } else {
+                lastReason = result.exceptionOrNull()?.message
+            }
         }
 
-        // Public Piped & Invidious fallback instances
+        // Public Piped & Invidious fallback instances (each probed for HTTP 200 before accepting)
         val pipedInstances = listOf(
             "https://pipedapi.kavin.rocks",
             "https://pipedapi.adminforge.de",
-            "https://api.piped.private.coffee"
+            "https://api.piped.private.coffee",
+            "https://pipedapi.tokhmi.xyz",
+            "https://pipedapi.r4fo.com"
         )
         for (base in pipedInstances) {
             val res = fetchPipedStreams("$base/streams/$videoId", preferAudio, maxVideoHeightPx)
-            if (res.isSuccess) return res
+            if (res.isSuccess) {
+                val verified = verifyYouTubeCandidate(res.getOrThrow(), preferAudio)
+                if (verified != null) return Result.success(verified)
+            }
         }
 
         val invidiousInstances = listOf(
             "https://inv.nadeko.net",
             "https://yewtu.be",
-            "https://invidious.nerdvpn.de"
+            "https://invidious.nerdvpn.de",
+            "https://iv.melmac.space",
+            "https://invidious.protokolla.fi"
         )
+        val proxyItags = when {
+            preferAudio -> listOf(140)
+            maxVideoHeightPx >= 720 -> listOf(22, 18)
+            else -> listOf(18)
+        }
         for (base in invidiousInstances) {
             val res = fetchInvidiousStreams("$base/api/v1/videos/$videoId", preferAudio, maxVideoHeightPx)
-            if (res.isSuccess) return res
+            if (res.isSuccess) {
+                val verified = verifyYouTubeCandidate(res.getOrThrow(), preferAudio)
+                if (verified != null) return Result.success(verified)
+            }
+            // Server-proxied Invidious local=true stream bypasses carrier IPv4/IPv6 & CDN 403 blocks
+            for (itag in proxyItags) {
+                val proxyUrl = "$base/latest_version?id=$videoId&itag=$itag&local=true"
+                val proxyHeaders = mapOf("User-Agent" to CHROME_MOBILE_UA)
+                if (probeMediaUrlOk(proxyUrl, proxyHeaders)) {
+                    return Result.success(
+                        ResolvedMediaStream(
+                            primaryUrl = proxyUrl,
+                            title = oembedTitle,
+                            artist = "YouTube",
+                            mimeType = if (preferAudio) "audio/mp4" else "video/mp4",
+                            extension = if (preferAudio) "m4a" else "mp4",
+                            headers = proxyHeaders
+                        )
+                    )
+                }
+            }
         }
 
         return Result.failure(
             IllegalArgumentException(
                 lastReason
-                    ?: "YouTube blocked stream extraction for this video (private, age-restricted, or region-locked)."
+                    ?: "YouTube blocked stream extraction for this video (private, age-restricted, or CDN 403)."
             )
         )
     }
@@ -264,6 +333,7 @@ internal class MediaUrlResolver {
     private fun fetchYouTubeInnerTube(
         videoId: String,
         profile: InnerTubeProfile,
+        visitorData: String?,
         preferAudio: Boolean,
         maxVideoHeightPx: Int
     ): Result<ResolvedMediaStream> {
@@ -276,6 +346,7 @@ internal class MediaUrlResolver {
                 put("osName", profile.osName)
                 put("osVersion", profile.osVersion)
                 profile.androidSdkVersion?.let { put("androidSdkVersion", it) }
+                if (!visitorData.isNullOrBlank()) put("visitorData", visitorData)
                 put("hl", "en")
                 put("gl", "US")
             }
@@ -292,19 +363,34 @@ internal class MediaUrlResolver {
                 put("racyCheckOk", true)
             }
 
-            val headers = mapOf(
-                "User-Agent" to profile.userAgent,
-                "Content-Type" to "application/json",
-                "Origin" to "https://www.youtube.com",
-                "Referer" to "https://www.youtube.com/watch?v=$videoId",
-                "X-YouTube-Client-Name" to profile.clientId,
-                "X-YouTube-Client-Version" to profile.clientVersion
-            )
+            // Native clients must NOT attach web Origin/Referer headers on InnerTube or googlevideo.com
+            val reqHeaders = buildMap {
+                put("User-Agent", profile.userAgent)
+                put("Content-Type", "application/json")
+                put("X-YouTube-Client-Name", profile.clientId)
+                put("X-YouTube-Client-Version", profile.clientVersion)
+                if (!visitorData.isNullOrBlank()) {
+                    put("X-Goog-Visitor-Id", visitorData)
+                }
+                if (profile.isEmbedded) {
+                    put("Origin", "https://www.youtube.com")
+                    put("Referer", "https://www.youtube.com/watch?v=$videoId")
+                }
+            }
+            val streamHeaders = if (profile.isEmbedded) {
+                mapOf(
+                    "User-Agent" to profile.userAgent,
+                    "Origin" to "https://www.youtube.com",
+                    "Referer" to "https://www.youtube.com/"
+                )
+            } else {
+                mapOf("User-Agent" to profile.userAgent)
+            }
 
             val (code, body) = httpPostString(
                 urlString = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
                 body = payload.toString(),
-                headers = headers
+                headers = reqHeaders
             )
             if (code !in 200..299 || body.isBlank()) {
                 error("InnerTube ${profile.name} returned HTTP $code")
@@ -315,9 +401,131 @@ internal class MediaUrlResolver {
                 root = root,
                 preferAudio = preferAudio,
                 maxVideoHeightPx = maxVideoHeightPx,
-                streamHeaders = mapOf("User-Agent" to profile.userAgent)
+                streamHeaders = streamHeaders
             ).getOrThrow()
         }
+    }
+
+    private fun verifyYouTubeCandidate(
+        candidate: ResolvedMediaStream,
+        preferAudio: Boolean
+    ): ResolvedMediaStream? {
+        val bareHeaders = mapOf("User-Agent" to (candidate.headers["User-Agent"] ?: CHROME_MOBILE_UA))
+        val headerVariants = listOf(candidate.headers, bareHeaders).distinct()
+
+        for (headersToTry in headerVariants) {
+            val primaryOk = probeMediaUrlOk(candidate.primaryUrl, headersToTry)
+            if (!primaryOk) continue
+            val companionUrl = candidate.companionAudioUrl
+            if (companionUrl == null) {
+                return candidate.copy(headers = headersToTry)
+            }
+            val companionHeaders = candidate.companionAudioHeaders.ifEmpty { headersToTry }
+            val companionDirectOk = probeMediaUrlOk(companionUrl, companionHeaders)
+            val companionBareOk = !companionDirectOk &&
+                companionHeaders != bareHeaders &&
+                probeMediaUrlOk(companionUrl, bareHeaders)
+            if (companionDirectOk || companionBareOk) {
+                return candidate.copy(
+                    headers = headersToTry,
+                    companionAudioHeaders = if (companionDirectOk) companionHeaders else bareHeaders
+                )
+            }
+        }
+
+        // If adaptive 1080p/audio returned 403, try the muxed progressive stream (itag 22/18) from the same response
+        val muxedUrl = candidate.fallbackMuxedUrl
+        if (!preferAudio && muxedUrl != null) {
+            val muxVariants = listOf(
+                candidate.fallbackMuxedHeaders.ifEmpty { candidate.headers },
+                bareHeaders
+            ).distinct()
+            for (muxHeaders in muxVariants) {
+                if (probeMediaUrlOk(muxedUrl, muxHeaders)) {
+                    return candidate.copy(
+                        primaryUrl = muxedUrl,
+                        headers = muxHeaders,
+                        companionAudioUrl = null,
+                        companionAudioHeaders = emptyMap(),
+                        fallbackMuxedUrl = null
+                    )
+                }
+            }
+        }
+        return null
+    }
+
+    private fun fetchYouTubeVisitorData(): String? {
+        val (code, body) = httpGetString(
+            urlString = "https://www.youtube.com/sw.js_data",
+            headers = mapOf("User-Agent" to CHROME_DESKTOP_UA),
+            timeoutMs = 5000
+        )
+        if (code in 200..299 && body.isNotBlank()) {
+            val match = Regex(""""(Cg[A-Za-z0-9_%-]{16,})"""").find(body)
+            if (match != null) return match.groupValues[1]
+        }
+        return null
+    }
+
+    private fun fetchYouTubeOembedTitle(videoId: String): String? {
+        val (code, body) = httpGetString(
+            urlString = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$videoId&format=json",
+            headers = mapOf("User-Agent" to CHROME_DESKTOP_UA),
+            timeoutMs = 5000
+        )
+        if (code in 200..299 && body.trimStart().startsWith("{")) {
+            return runCatching {
+                JSONObject(body).optString("title").takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+        return null
+    }
+
+    private fun probeMediaUrlOk(urlString: String, headers: Map<String, String>): Boolean {
+        var currentUrl = urlString
+        var redirects = 0
+        while (redirects < 5) {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = false
+                    connectTimeout = 7000
+                    readTimeout = 7000
+                    requestMethod = "GET"
+                    headers.forEach { (k, v) -> setRequestProperty(k, v) }
+                }
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val loc = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (loc.isNullOrBlank()) return false
+                    currentUrl = URL(URL(currentUrl), loc).toString()
+                    redirects++
+                    continue
+                }
+                if (code !in 200..299 && code != 206) {
+                    return false
+                }
+                val ct = conn.contentType.orEmpty().lowercase()
+                if (ct.contains("text/html") || ct.contains("application/xhtml")) {
+                    return false
+                }
+                val buf = ByteArray(64)
+                val read = conn.inputStream.use { it.read(buf) }
+                if (read <= 0) return false
+                val head = String(buf, 0, read, Charsets.UTF_8).trimStart().lowercase()
+                if (head.startsWith("<!doctype html") || head.startsWith("<html")) {
+                    return false
+                }
+                return true
+            } catch (_: Throwable) {
+                return false
+            } finally {
+                runCatching { conn?.disconnect() }
+            }
+        }
+        return false
     }
 
     internal fun parseInnerTubeJson(
@@ -677,12 +885,18 @@ internal class MediaUrlResolver {
         var canonicalUrl = rawUrl.trim()
         var shortcode = extractInstagramShortcode(canonicalUrl)
 
-        // Follow /share/reel/... redirects if shortcode isn't directly visible
+        // Follow /share/reel/... redirects or canonical link if shortcode isn't directly visible
         if (shortcode == null) {
             val redirected = resolveRedirectOnly(canonicalUrl)
             if (redirected != null) {
                 canonicalUrl = redirected
                 shortcode = extractInstagramShortcode(canonicalUrl)
+            }
+            if (shortcode == null) {
+                val (_, shareBody) = runCatching {
+                    httpGetString(canonicalUrl, mapOf("User-Agent" to CHROME_DESKTOP_UA), timeoutMs = 6000)
+                }.getOrElse { 0 to "" }
+                shortcode = extractInstagramShortcode(shareBody)
             }
         }
 
@@ -697,24 +911,43 @@ internal class MediaUrlResolver {
         // Strategy 1: Instagram Embed Captioned HTML (/p/<shortcode>/embed/captioned/ & /reel/<shortcode>/embed/captioned/)
         val embedUrls = listOf(
             "https://www.instagram.com/reel/$shortcode/embed/captioned/",
-            "https://www.instagram.com/p/$shortcode/embed/captioned/"
+            "https://www.instagram.com/p/$shortcode/embed/captioned/",
+            "https://www.instagram.com/p/$shortcode/embed/"
         )
         for (embedUrl in embedUrls) {
             val res = fetchInstagramFromHtmlPage(embedUrl, CHROME_DESKTOP_UA, preferAudio)
-            if (res.isSuccess) return res
+            if (res.isSuccess) {
+                val stream = res.getOrThrow()
+                if (probeMediaUrlOk(stream.primaryUrl, stream.headers)) return Result.success(stream)
+                if (probeMediaUrlOk(stream.primaryUrl, mapOf("User-Agent" to CHROME_DESKTOP_UA))) {
+                    return Result.success(stream.copy(headers = mapOf("User-Agent" to CHROME_DESKTOP_UA)))
+                }
+            }
             if (res.exceptionOrNull()?.message?.contains("photo-only") == true) sawPhotoOnly = true
         }
 
         // Strategy 2: Instagram GraphQL endpoint (PolarisPostActionLoadPostQueryQuery)
         val gqlRes = fetchInstagramGraphQl(shortcode, preferAudio)
-        if (gqlRes.isSuccess) return gqlRes
+        if (gqlRes.isSuccess) {
+            val stream = gqlRes.getOrThrow()
+            if (probeMediaUrlOk(stream.primaryUrl, stream.headers)) return Result.success(stream)
+            if (probeMediaUrlOk(stream.primaryUrl, mapOf("User-Agent" to CHROME_DESKTOP_UA))) {
+                return Result.success(stream.copy(headers = mapOf("User-Agent" to CHROME_DESKTOP_UA)))
+            }
+        }
         if (gqlRes.exceptionOrNull()?.message?.contains("photo-only") == true) sawPhotoOnly = true
 
         // Strategy 3: Instagram Mobile API v1 (/api/v1/media/{mediaId}/info/) & ?__a=1&__d=dis
         val mediaId = shortcodeToMediaId(shortcode)
         if (mediaId != null) {
             val apiRes = fetchInstagramMobileApi(mediaId, shortcode, preferAudio)
-            if (apiRes.isSuccess) return apiRes
+            if (apiRes.isSuccess) {
+                val stream = apiRes.getOrThrow()
+                if (probeMediaUrlOk(stream.primaryUrl, stream.headers)) return Result.success(stream)
+                if (probeMediaUrlOk(stream.primaryUrl, mapOf("User-Agent" to CHROME_DESKTOP_UA))) {
+                    return Result.success(stream.copy(headers = mapOf("User-Agent" to CHROME_DESKTOP_UA)))
+                }
+            }
             if (apiRes.exceptionOrNull()?.message?.contains("photo-only") == true) sawPhotoOnly = true
         }
 
@@ -722,7 +955,13 @@ internal class MediaUrlResolver {
         val pageUrl = "https://www.instagram.com/reel/$shortcode/"
         for (ua in listOf(WHATSAPP_CRAWLER_UA, FB_CRAWLER_UA)) {
             val res = fetchInstagramFromHtmlPage(pageUrl, ua, preferAudio)
-            if (res.isSuccess) return res
+            if (res.isSuccess) {
+                val stream = res.getOrThrow()
+                if (probeMediaUrlOk(stream.primaryUrl, stream.headers)) return Result.success(stream)
+                if (probeMediaUrlOk(stream.primaryUrl, mapOf("User-Agent" to CHROME_DESKTOP_UA))) {
+                    return Result.success(stream.copy(headers = mapOf("User-Agent" to CHROME_DESKTOP_UA)))
+                }
+            }
             if (res.exceptionOrNull()?.message?.contains("photo-only") == true) sawPhotoOnly = true
         }
 
@@ -790,9 +1029,16 @@ internal class MediaUrlResolver {
                 Regex(""""csrf_token":"([^"]+)"""").find(html)?.groupValues?.getOrNull(1)?.let {
                     if (csrfToken == "missing") csrfToken = it
                 }
-                // Check if the HTML itself already gave us video_url!
+                // Check if the HTML itself already gave us a live playable video_url
                 val inlineResult = parseInstagramHtmlOrJson(html, postUrl, preferAudio)
-                if (inlineResult.isSuccess) return@runCatching inlineResult.getOrThrow()
+                if (inlineResult.isSuccess) {
+                    val inlineStream = inlineResult.getOrThrow()
+                    if (probeMediaUrlOk(inlineStream.primaryUrl, inlineStream.headers) ||
+                        probeMediaUrlOk(inlineStream.primaryUrl, mapOf("User-Agent" to CHROME_DESKTOP_UA))
+                    ) {
+                        return@runCatching inlineStream
+                    }
+                }
             } finally {
                 runCatching { conn.disconnect() }
             }
@@ -1198,6 +1444,7 @@ internal class MediaUrlResolver {
 
     internal fun unescapeMediaUrl(raw: String): String {
         return raw.trim()
+            .trimEnd('\\')
             .replace("""\/""", "/")
             .replace("""\u0026""", "&")
             .replace("""\u002F""", "/", ignoreCase = true)
